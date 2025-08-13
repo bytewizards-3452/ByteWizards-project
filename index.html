@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Healthcare RAG Q&A</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #f8f9fa; }
+        .tab { padding: 10px; cursor: pointer; display: inline-block; background: #ddd; margin-right: 5px; }
+        .tab.active { background: #bbb; }
+        .tab-content { display: none; padding: 20px; }
+        .tab-content.active { display: block; }
+        #answer { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div>
+        <div class="tab active" onclick="showTab('health')">Healthcare Mode</div>
+        <div class="tab" onclick="showTab('custom')">Custom Mode</div>
+    </div>
+    <div id="health" class="tab-content active">
+        <h2>Healthcare Q&A</h2>
+        <input id="q1" placeholder="Ask a healthcare question">
+        <button onclick="ask('health')">Ask</button>
+        <div id="a1"></div>
+    </div>
+    <div id="custom" class="tab-content">
+        <h2>Custom Document Q&A</h2>
+        <input id="q2" placeholder="Ask about uploaded docs">
+        <button onclick="ask('custom')">Ask</button>
+        <div id="a2"></div>
+    </div>
+<script>
+function showTab(tab){
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector('.tab[onclick="showTab(\''+tab+'\')"]').classList.add('active');
+    document.getElementById(tab).classList.add('active');
+}
+async function ask(mode){
+    const q = document.getElementById(mode==='health'?'q1':'q2').value;
+    const res = await fetch('/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,mode:mode})});
+    const data = await res.json();
+    document.getElementById(mode==='health'?'a1':'a2').innerText = data.answer;
+}
+</script>
+</body>
+</html>

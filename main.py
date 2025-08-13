@@ -1,50 +1,91 @@
-from fastapi import FastAPI
-from sentence_transformers import SentenceTransformer
-import numpy as np
-import faiss
 import os
-print("CWD:", os.getcwd())
-print("Files in CWD:", os.listdir("."))
+import uvicorn
+import faiss
+import numpy as np
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+INDEX_PATH = os.path.join(BASE_DIR, "index.faiss")
+DOC_MAP_PATH = os.path.join(BASE_DIR, "doc_map.npy")
 
 app = FastAPI()
 
 model = None
 index = None
-doc_map = {}  # maps FAISS IDs to document metadata if needed
+doc_map = None
+
+class QueryRequest(BaseModel):
+    question: str
 
 @app.on_event("startup")
 def startup_event():
     global index, doc_map
-    # Load FAISS index once at startup
-    if os.path.exists("data/healthcare_docs/index.faiss"):
-        index = faiss.read_index("data/healthcare_docs/index.faiss")
-        # If you have a mapping file for doc texts/IDs, load it here:
-        if os.path.exists("data/healthcare_docs/doc_map.npy"):
-            doc_map = np.load("data/healthcare_docs/doc_map.npy", allow_pickle=True).item()
+    print("--- Server Startup ---")
+    print(f"Base directory detected as: {BASE_DIR}")
+    print(f"Attempting to load index from: {INDEX_PATH}")
+    print(f"Attempting to load doc_map from: {DOC_MAP_PATH}")
+
+    if os.path.exists(INDEX_PATH) and os.path.exists(DOC_MAP_PATH):
+        try:
+            index = faiss.read_index(INDEX_PATH)
+            doc_map_array = np.load(DOC_MAP_PATH, allow_pickle=True)
+            doc_map = doc_map_array.item()
+            print("✅ FAISS index and document map loaded successfully.")
+            print(f"Index contains {index.ntotal} vectors.")
+        except Exception as e:
+            print(f"🚨 Error loading files: {e}")
     else:
-        print("Warning: FAISS index not found")
+        print("🚨 Warning: Could not find 'index.faiss' and/or 'doc_map.npy'.")
+        if not os.path.exists(INDEX_PATH):
+            print("-> 'index.faiss' is MISSING.")
+        if not os.path.exists(DOC_MAP_PATH):
+            print("-> 'doc_map.npy' is MISSING.")
+        print("The app will run, but querying will fail.")
+    print("--- Startup Complete ---")
 
-@app.get("/query")
-def query_docs(q: str):
-    global model
+
+@app.post("/query")
+def query(req: QueryRequest):
+    global model, index, doc_map
+
+    if index is None or doc_map is None:
+        return {"error": "FAISS index is not available. Please check server logs."}
+
     if model is None:
-        # Load the embedding model lazily
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-    if index is None:
-        return {"error": "FAISS index not loaded"}
-    
-    # Encode query → search FAISS index
-    embedding = model.encode([q])
-    D, I = index.search(np.array(embedding, dtype=np.float32), k=3)
+        print("First query received. Loading sentence-transformer model...")
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        print("✅ Model loaded.")
 
-    results = []
-    for idx, dist in zip(I[0], D[0]):
-        doc_info = doc_map.get(idx, f"Document {idx}")
-        results.append({"doc": doc_info, "score": float(dist)})
+    query_embedding = model.encode([req.question], convert_to_numpy=True)
+
+    distances, indices = index.search(query_embedding, k=1)
     
-    return {"query": q, "results": results}
+    match_index = indices[0][0]
+    
+    answer_text = "No relevant document found."
+    source_file = "N/A"
+    
+    if match_index < len(doc_map):
+        source_file = doc_map.get(match_index, "Unknown Source")
+        answer_text = f"Found a relevant section in the document: {source_file}"
+
+    return {
+        "answer": answer_text,
+        "source": source_file,
+        "score": float(distances[0][0])
+    }
+
+@app.get("/")
+def root():
+    frontend_path = os.path.join(BASE_DIR, "index.html")
+    if os.path.exists(frontend_path):
+        return FileResponse(frontend_path)
+    return {"error": "index.html not found."}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)

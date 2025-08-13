@@ -3,9 +3,10 @@ import uvicorn
 import faiss
 import numpy as np
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import json
+from sentence_transformers import SentenceTransformer
 
 # --- CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,37 +22,31 @@ doc_map = None
 class QueryRequest(BaseModel):
     question: str
 
-# --- STARTUP EVENT ---
+# --- STARTUP EVENT (Loads Everything) ---
 @app.on_event("startup")
 def startup_event():
-    global index, doc_map
-    print("--- Server Startup ---")
+    global model, index, doc_map
     
+    # Load FAISS index and document map
     if os.path.exists(INDEX_PATH) and os.path.exists(DOC_MAP_PATH):
-        try:
-            index = faiss.read_index(INDEX_PATH)
-            with open(DOC_MAP_PATH, 'r') as f:
-                doc_map = {int(k): v for k, v in json.load(f).items()}
-            print("✅ FAISS index and document map loaded successfully.")
-            print(f"Index contains {index.ntotal} vectors.")
-        except Exception as e:
-            print(f"🚨 Error loading files: {e}")
+        index = faiss.read_index(INDEX_PATH)
+        with open(DOC_MAP_PATH, 'r') as f:
+            doc_map = {int(k): v for k, v in json.load(f).items()}
+        print("✅ FAISS index and document map loaded.")
     else:
-        print("🚨 Warning: Index and/or document map file not found.")
+        print("🚨 Warning: Index/doc_map not found.")
+
+    # Load the embedding model at startup
+    print("Loading sentence-transformer model...")
+    model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    print("✅ AI Model loaded and ready.")
+
 
 # --- QUERY ENDPOINT ---
 @app.post("/query")
 def query(req: QueryRequest):
-    global model, index, doc_map
-
-    if index is None:
-        return {"error": "Index not loaded."}
-
-    if model is None:
-        print("Loading embedding model on first query...")
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-        print("✅ Model loaded.")
+    if index is None or model is None:
+        return {"error": "Server is not ready. Please check logs."}
 
     query_embedding = model.encode([req.question], convert_to_numpy=True)
     distances, indices = index.search(query_embedding, k=1)
@@ -60,46 +55,12 @@ def query(req: QueryRequest):
     source_file = doc_map.get(match_index, "Unknown Source")
     answer_text = f"Found a relevant section in the document: {source_file}"
 
-    return {
-        "answer": answer_text,
-        "source": source_file,
-        "score": float(distances[0][0])
-    }
+    return {"answer": answer_text, "source": source_file, "score": float(distances[0][0])}
 
-# --- ROOT ENDPOINT (with debugging) ---
+# --- ROOT ENDPOINT ---
 @app.get("/")
 def root():
-    print("\n--- A user visited the website root ('/') ---")
-    
-    frontend_path = os.path.join(BASE_DIR, "index.html")
-    print(f"Checking for frontend file at this exact path: {frontend_path}")
-    
-    file_exists = os.path.exists(frontend_path)
-    print(f"Result of os.path.exists() check: {file_exists}")
-
-    if file_exists:
-        print("✅ Success! Serving index.html.")
-        return FileResponse(frontend_path)
-    else:
-        print("🚨 CRITICAL: index.html not found at the path.")
-        print("Listing all files and folders found in the base directory:")
-        try:
-            files_in_directory = os.listdir(BASE_DIR)
-            print(files_in_directory)
-            return JSONResponse(
-                status_code=404, 
-                content={
-                    "error": "index.html was not found by the server.",
-                    "checked_path": frontend_path,
-                    "files_found_in_directory": files_in_directory
-                }
-            )
-        except Exception as e:
-            print(f"Error trying to list directory files: {e}")
-            return JSONResponse(
-                status_code=500,
-                content={"error": "A server error occurred while trying to list files."}
-            )
+    return FileResponse("index.html")
 
 # --- MAIN RUNNER ---
 if __name__ == "__main__":
